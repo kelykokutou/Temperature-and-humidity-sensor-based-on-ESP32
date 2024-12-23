@@ -1,0 +1,88 @@
+import machine
+import utime
+import dht
+from machine import I2C, Pin
+from ssd1306 import SSD1306_I2C
+from ds1307 import DS1307
+
+# 初始化硬件
+dht_sensor = dht.DHT22(Pin(15))  # DHT22 数据引脚连接到 GPIO15
+i2c = I2C(scl=Pin(22), sda=Pin(21))  # I2C 引脚
+rtc = DS1307(i2c)  # 初始化 DS1307
+oled = SSD1306_I2C(128, 64, i2c)  # 初始化 SSD1306，分辨率 128x64
+
+# 初始化报警和按键
+buzzer = Pin(33, Pin.OUT)
+button = Pin(32, Pin.IN, Pin.PULL_UP)
+
+# 温湿度报警上下限
+TEMP_MAX = 30.0
+TEMP_MIN = 15.0
+HUMIDITY_MAX = 70.0
+HUMIDITY_MIN = 30.0
+
+# 按键状态
+alarm_cleared = False
+last_alarm_time = 0
+
+def clear_alarm(pin):
+    global alarm_cleared, last_alarm_time
+    # 去抖处理：限制按钮触发间隔
+    current_time = utime.ticks_ms()
+    if utime.ticks_diff(current_time, last_alarm_time) > 200:  # 200ms 去抖时间
+        alarm_cleared = True
+        buzzer.off()
+        last_alarm_time = current_time
+
+button.irq(trigger=Pin.IRQ_FALLING, handler=clear_alarm)
+
+# 设置时间（如需要初始化时钟，取消注释以下行）
+# rtc.datetime((2024, 12, 23, 10, 30, 0, 0))  # 年, 月, 日, 时, 分, 秒, 星期
+
+while True:
+    try:
+        # 获取温湿度
+        dht_sensor.measure()
+        temp = dht_sensor.temperature()
+        humidity = dht_sensor.humidity()
+
+        # 获取当前时间
+        year, month, day, weekday, hour, minute, second = rtc.datetime()
+
+        # 清空 OLED 显示
+        oled.fill(0)
+
+        # OLED 显示温湿度
+        oled.text(f"Temp: {temp:.1f}C", 0, 0)
+        oled.text(f"Hum:  {humidity:.1f}%", 0, 10)
+
+        # OLED 显示时间和日期
+        oled.text(f"{year:04d}-{month:02d}-{day:02d}", 0, 30)
+        oled.text(f"{hour:02d}:{minute:02d}:{second:02d}", 0, 40)
+
+        # 更新 OLED 显示
+        oled.show()
+
+        # 检查报警条件
+        if (temp > TEMP_MAX or temp < TEMP_MIN or
+                humidity > HUMIDITY_MAX or humidity < HUMIDITY_MIN):
+            if not alarm_cleared:
+                buzzer.on()
+                oled.text("ALARM!", 0, 50)
+                oled.show()
+            else:
+                oled.text("Alarm Cleared", 0, 50)
+                oled.show()
+        else:
+            buzzer.off()
+            alarm_cleared = False  # 复位报警状态
+
+        # 延时 2 秒
+        utime.sleep(2)
+    except OSError as e:
+        oled.fill(0)
+        oled.text("Sensor Error!", 0, 0)
+        oled.show()
+        utime.sleep(2)
+    except Exception as e:
+        print("Error:", e)
